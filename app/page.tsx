@@ -34,7 +34,10 @@ return (
 {/* NAVBAR */}
 <nav style={styles.nav}>
 <h2 style={styles.logo}>Avelo</h2>
-<button style={styles.navBtn}>Login</button>
+<div style={{ display: "flex", gap: "10px" }}>
+<button onClick={() => window.location.href = "/login"} style={styles.navBtn}>Login</button>
+<button onClick={() => window.location.href = "/register"} style={{ ...styles.navBtn, background: "#111", color: "#fff", border: "none" }}>Get Started</button>
+</div>
 </nav>
 
 {/* HERO */}
