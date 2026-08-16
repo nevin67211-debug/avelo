@@ -24,6 +24,7 @@ interface ShopifyOrderRecord extends OrderRecord {
   status: "Pending" | "Fulfilled";
   trackingNumber?: string;
   dateString?: string;
+  items?: { name: string; qty: number; price: number }[];
 }
 
 interface StockLogRecord {
@@ -33,6 +34,12 @@ interface StockLogRecord {
   qty: number;
   reason: string;
   timestamp: string;
+}
+
+interface ToastMessage {
+  id: string;
+  text: string;
+  type: "success" | "error" | "info";
 }
 
 const INITIAL_USERS = [
@@ -101,34 +108,40 @@ export default function Dashboard(): ReactNode {
   const [products, setProducts] = useState<ShopifyProductRecord[]>([]);
   const [orders, setOrders] = useState<ShopifyOrderRecord[]>([]);
   const [analytics, setAnalytics] = useState({ revenue: 0, orders: 0, products: 0, events: 0 });
-  const [liveActivity, setLiveActivity] = useState([
-    { title: "Checkout completed", detail: "3 new purchases in the last 5 minutes", time: "just now" },
-    { title: "User session spike", detail: "12% growth in active sessions", time: "6 min ago" },
-  ]);
 
-  // ── INVENTORY LOGS STATE ──
+  const [toasts, setToasts] = useState<ToastMessage[]>([]);
+
+  const addToast = (text: string, type: "success" | "error" | "info" = "success") => {
+    const id = Math.random().toString(36).substring(2, 9);
+    setToasts((prev) => [...prev, { id, text, type }]);
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id));
+    }, 3500);
+  };
+
+  const [productSearch, setProductSearch] = useState("");
+  const [productStatusFilter, setProductStatusFilter] = useState<"All" | "Active" | "Draft">("All");
+  const [orderSearch, setOrderSearch] = useState("");
+  const [orderStatusFilter, setOrderStatusFilter] = useState<"All" | "Pending" | "Fulfilled">("All");
+
+  const [editingProduct, setEditingProduct] = useState<ShopifyProductRecord | null>(null);
+  const [selectedOrder, setSelectedOrder] = useState<ShopifyOrderRecord | null>(null);
+
   const [stockLogs, setStockLogs] = useState<StockLogRecord[]>([
     { id: "LOG-901", productName: "Sample Leather Jacket", type: "In", qty: 50, reason: "Initial Stocking", timestamp: "10 min ago" },
   ]);
 
-  // ── BULK ACTIONS STATE ──
   const [selectedProductIds, setSelectedProductIds] = useState<string[]>([]);
-
-  // ── ORDER FULFILLMENT STATE ──
   const [activeFulfillOrder, setActiveFulfillOrder] = useState<ShopifyOrderRecord | null>(null);
   const [inputTracking, setInputTracking] = useState("");
 
-  // ── SETTINGS STATE ──
   const [storeName, setStoreName] = useState("Avelo Premium Store");
   const [storeEmail, setStoreEmail] = useState("contact@avelo.com");
   const [currency, setCurrency] = useState("USD");
   const [enableStripe, setEnableStripe] = useState(true);
   const [enablePaypal, setEnablePaypal] = useState(false);
   const [enableBankTransfer, setEnableBankTransfer] = useState(true);
-  const [shippingRate, setShippingRate] = useState("4.99");
-  const [enableVat, setEnableVat] = useState(true);
 
-  // Shopify Advanced Product Form States
   const [showProductModal, setShowProductModal] = useState(false);
   const [inputName, setInputName] = useState("");
   const [inputDescription, setInputDescription] = useState("");
@@ -141,10 +154,8 @@ export default function Dashboard(): ReactNode {
   const [inputCategory, setInputCategory] = useState("Electronics");
   const [inputStatus, setInputStatus] = useState<"Active" | "Draft">("Active");
 
-  // ระบบกราฟ Interactivity
   const [metric, setMetric] = useState<MetricKey>("revenue");
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
-  const [livePulse, setLivePulse] = useState([42, 56, 49, 68, 58, 75, 69]);
   const [animKey, setAnimKey] = useState(0);
   const svgRef = useRef<SVGSVGElement>(null);
   const lineRef = useRef<SVGPathElement>(null);
@@ -189,13 +200,6 @@ export default function Dashboard(): ReactNode {
   }, [activeIdx, pts]);
 
   useEffect(() => {
-    const interval = setInterval(() => {
-      setLivePulse((prev) => prev.map((value, index) => (index === prev.length - 1 ? Math.max(35, Math.min(90, value + (Math.random() > 0.5 ? 4 : -3))) : prev[index + 1])));
-    }, 1400);
-    return () => clearInterval(interval);
-  }, []);
-
-  useEffect(() => {
     let prev = performance.now();
     function tick(now: number) {
       const dt = Math.min((now - prev) / 16, 4); prev = now;
@@ -223,8 +227,15 @@ export default function Dashboard(): ReactNode {
 
   const handleRange = (r: Range) => { setRange(r); setHoverIdx(null); triggerAnim(); };
   const handleMetric = (k: MetricKey) => { setMetric(k); setHoverIdx(null); triggerAnim(); };
-
   const metricLabel = metric === "revenue" ? "REVENUE" : metric === "orders" ? "ORDERS" : "VISITORS";
+
+  const gridValues = (() => {
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    const range = max - min || 1;
+    const steps = 4;
+    return Array.from({ length: steps + 1 }, (_, i) => min + (range * i) / steps);
+  })();
 
   useEffect(() => {
     Promise.all([fetchProducts(), fetchOrders(), fetchAnalyticsOverview()])
@@ -236,12 +247,16 @@ export default function Dashboard(): ReactNode {
           sku: "SKU-" + Math.floor(10000 + Math.random() * 90000),
           image: p.image || "https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=100&q=80"
         }));
-        
-        const extendedOrders = orderData.map((o: any) => ({
+
+        const extendedOrders = orderData.map((o: any, idx: number) => ({
           ...o,
           status: "Pending" as const,
           trackingNumber: "",
-          dateString: o.created_at ? new Date(o.created_at).toLocaleDateString() : "June 15, 2026"
+          dateString: o.created_at ? new Date(o.created_at).toLocaleDateString() : "June 15, 2026",
+          items: o.items || [
+            { name: "Premium Wireless Headphone", qty: 1, price: o.total ? o.total * 0.7 : 120 },
+            { name: "USB-C Fast Charging Cable", qty: 2, price: o.total ? o.total * 0.3 : 25 }
+          ]
         }));
 
         setProducts(extendedProducts);
@@ -262,7 +277,6 @@ export default function Dashboard(): ReactNode {
   const priceNum = parseFloat(inputPrice) || 0;
   const costNum = parseFloat(inputCost) || 0;
   const profit = priceNum - costNum;
-  const marginPercentage = priceNum > 0 ? (profit / priceNum) * 100 : 0;
 
   const handleShopifyProductSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -295,16 +309,33 @@ export default function Dashboard(): ReactNode {
     };
     setStockLogs((prev) => [newLog, ...prev]);
 
-    setLiveActivity((prev) => [
-      { title: `Shopify Sync: Product Created`, detail: `[${inputStatus}] "${inputName}" listed successfully.`, time: "just now" },
-      ...prev.slice(0, 2),
-    ]);
-
     setInputName(""); setInputDescription(""); setInputImageUrl("");
     setInputPrice(""); setInputCost(""); setInputSku(""); setInputBarcode("");
     setInputStock(""); setInputCategory("Electronics"); setInputStatus("Active");
     setShowProductModal(false);
     setSection("products");
+    addToast(`Product "${newShopifyProduct.name}" added successfully`);
+  };
+
+  const handleUpdateProductSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingProduct) return;
+
+    setProducts((prev) =>
+      prev.map((p) => (p.id === editingProduct.id ? editingProduct : p))
+    );
+
+    const newLog: StockLogRecord = {
+      id: "LOG-" + Math.floor(100 + Math.random() * 900),
+      productName: editingProduct.name,
+      type: "In",
+      qty: editingProduct.stock,
+      reason: "Updated Product Details",
+      timestamp: "Just now",
+    };
+    setStockLogs((prev) => [newLog, ...prev]);
+    addToast(`Product "${editingProduct.name}" updated`);
+    setEditingProduct(null);
   };
 
   const handleToggleSelectProduct = (id: string) => {
@@ -314,16 +345,17 @@ export default function Dashboard(): ReactNode {
   };
 
   const handleSelectAllProducts = () => {
-    if (selectedProductIds.length === products.length) {
+    if (selectedProductIds.length === filteredProducts.length) {
       setSelectedProductIds([]);
     } else {
-      setSelectedProductIds(products.map((p) => p.id));
+      setSelectedProductIds(filteredProducts.map((p) => p.id));
     }
   };
 
   const handleBulkDelete = () => {
-    if (confirm(`คุณแน่ใจหรือไม่ที่จะลบสินค้าทั้ง ${selectedProductIds.length} รายการนี้?`)) {
+    if (confirm(`Are you sure you want to delete ${selectedProductIds.length} selected product(s)?`)) {
       setProducts((prev) => prev.filter((p) => !selectedProductIds.includes(p.id)));
+      addToast(`Deleted ${selectedProductIds.length} product(s)`, "error");
       setSelectedProductIds([]);
     }
   };
@@ -332,6 +364,7 @@ export default function Dashboard(): ReactNode {
     setProducts((prev) =>
       prev.map((p) => (selectedProductIds.includes(p.id) ? { ...p, status: "Draft" } : p))
     );
+    addToast(`Selected products moved to Draft`);
     setSelectedProductIds([]);
   };
 
@@ -346,125 +379,166 @@ export default function Dashboard(): ReactNode {
           : o
       )
     );
-
-    setLiveActivity((prev) => [
-      { title: `Fulfillment: ${activeFulfillOrder.id}`, detail: `Shipped via Tracking: ${inputTracking}`, time: "just now" },
-      ...prev.slice(0, 2),
-    ]);
-
+    addToast(`Order ${activeFulfillOrder.id} marked as fulfilled`);
     setActiveFulfillOrder(null);
     setInputTracking("");
   };
 
   const handleSaveSettings = (e: React.FormEvent) => {
     e.preventDefault();
-    setLiveActivity((prev) => [
-      { title: `System: Settings Updated`, detail: `Configs and Core Framework synchronized.`, time: "just now" },
-      ...prev.slice(0, 2),
-    ]);
-    alert("⚙️ บันทึกการตั้งค่าร้านค้าเรียบร้อยแล้ว!");
+    addToast("Store settings saved");
   };
+
+  const filteredProducts = products.filter((p) => {
+    const matchesSearch =
+      p.name.toLowerCase().includes(productSearch.toLowerCase()) ||
+      (p.sku && p.sku.toLowerCase().includes(productSearch.toLowerCase()));
+    const matchesStatus = productStatusFilter === "All" || p.status === productStatusFilter;
+    return matchesSearch && matchesStatus;
+  });
+
+  const filteredOrders = orders.filter((o) => {
+    const matchesSearch =
+      o.id.toLowerCase().includes(orderSearch.toLowerCase()) ||
+      (o.customer && o.customer.toLowerCase().includes(orderSearch.toLowerCase()));
+    const matchesStatus = orderStatusFilter === "All" || o.status === orderStatusFilter;
+    return matchesSearch && matchesStatus;
+  });
 
   return (
     <ProtectedRoute requiredRole="user">
       <>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-        body { background: #fafafa; font-family: 'Outfit', sans-serif; color: #1a1a1a; -webkit-font-smoothing: antialiased; }
+        body { background: #f7f7f8; font-family: 'Inter', -apple-system, sans-serif; color: #16181d; -webkit-font-smoothing: antialiased; }
         .layout { display: flex; min-height: 100vh; }
 
-        /* SIDEBAR */
-        .sidebar { width: 240px; padding: 48px 24px; border-right: 1px solid rgba(0,0,0,0.06); position: sticky; top: 0; height: 100vh; background: #fff; display: flex; flex-direction: column; }
-        .s-logo { font-weight: 800; font-size: 20px; letter-spacing: -0.03em; color: #1a1a1a; margin-bottom: 24px; padding: 0 12px; }
-        .nav-item { display: flex; align-items: center; gap: 12px; padding: 12px 14px; color: #6d7175; font-size: 14px; font-weight: 500; cursor: pointer; border-radius: 8px; margin-bottom: 4px; transition: all 0.2s; }
-        .nav-item:hover { background: #f5f5f5; color: #1a1a1a; }
-        .nav-item.active { background: #000000; color: #ffffff; font-weight: 600; }
-        
-        .sidebar-btn-new { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 12px; margin: 12px 0; background: #008060; color: #ffffff; font-size: 14px; font-weight: 600; cursor: pointer; border-radius: 8px; border: none; }
-        /* สไตล์เพิ่มเติมสำหรับปุ่มเปิด Editor เพื่อให้เด่นชัดขึ้น */
-        .sidebar-btn-editor { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 12px; margin: 4px 0 12px 0; background: #2563eb; color: #ffffff; font-size: 14px; font-weight: 600; cursor: pointer; border-radius: 8px; border: none; transition: background 0.2s; }
-        .sidebar-btn-editor:hover { background: #1d4ed8; }
-        .s-logout { color: #e11d48; font-size: 13px; font-weight: 600; cursor: pointer; padding: 12px 14px; }
+        .toast-container { position: fixed; bottom: 24px; right: 24px; z-index: 9999; display: flex; flex-direction: column; gap: 10px; pointer-events: none; }
+        .toast-item { pointer-events: auto; background: #16181d; color: #fff; padding: 13px 18px; border-radius: 8px; font-size: 13.5px; font-weight: 500; box-shadow: 0 8px 20px rgba(0,0,0,0.18); display: flex; align-items: center; gap: 10px; animation: slideInUp 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+        .toast-item.error { background: #c81e3a; }
+        .toast-dot { width: 6px; height: 6px; border-radius: 50%; background: #34d399; flex-shrink: 0; }
+        .toast-item.error .toast-dot { background: #fecdd3; }
+        @keyframes slideInUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
 
-        /* MAIN PANEL */
-        .main { flex: 1; padding: 60px 60px 100px; max-width: 1400px; margin: 0 auto; width: 100%; }
-        .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 40px; }
-        .page-title { font-size: 32px; font-weight: 800; color: #1a1a1a; letter-spacing: -0.03em; }
+        .sidebar { width: 232px; padding: 40px 20px; border-right: 1px solid rgba(0,0,0,0.07); position: sticky; top: 0; height: 100vh; background: #fff; display: flex; flex-direction: column; }
+        .s-logo { font-weight: 700; font-size: 18px; letter-spacing: -0.02em; color: #16181d; margin-bottom: 28px; padding: 0 12px; }
+        .nav-item { display: flex; align-items: center; gap: 10px; padding: 10px 14px; color: #6b7076; font-size: 13.5px; font-weight: 500; cursor: pointer; border-radius: 8px; margin-bottom: 2px; transition: all 0.15s; }
+        .nav-item:hover { background: #f3f3f4; color: #16181d; }
+        .nav-item.active { background: #16181d; color: #ffffff; font-weight: 600; }
 
-        .range-picker { display: flex; background: #fff; border: 1px solid rgba(0,0,0,0.06); border-radius: 10px; padding: 4px; gap: 2px; }
-        .range-btn { font-family: inherit; font-size: 12px; font-weight: 600; padding: 6px 14px; border: none; border-radius: 7px; cursor: pointer; background: transparent; color: #888888; }
-        .range-btn.on { background: #000000; color: #ffffff; }
+        .sidebar-btn-new { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 11px; margin: 10px 0; background: #16181d; color: #ffffff; font-size: 13.5px; font-weight: 600; cursor: pointer; border-radius: 8px; border: none; transition: background 0.15s; }
+        .sidebar-btn-new:hover { background: #2a2d34; }
+        .sidebar-btn-editor { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 11px; margin: 4px 0 10px 0; background: #fff; color: #16181d; font-size: 13.5px; font-weight: 600; cursor: pointer; border-radius: 8px; border: 1px solid rgba(0,0,0,0.12); transition: background 0.15s; }
+        .sidebar-btn-editor:hover { background: #f3f3f4; }
+        .s-logout { color: #8a8f97; font-size: 12.5px; font-weight: 500; cursor: pointer; padding: 10px 14px; transition: color 0.15s; }
+        .s-logout:hover { color: #c81e3a; }
 
-        /* TABLES & CARDS */
-        .table-card { background: #ffffff; border: 1px solid rgba(0,0,0,0.06); border-radius: 20px; padding: 32px; box-shadow: 0 1px 3px rgba(0,0,0,0.02); margin-bottom: 24px; }
-        .section-title { font-size: 16px; font-weight: 700; color: #000000; margin-bottom: 20px; }
+        .main { flex: 1; padding: 56px 56px 100px; max-width: 1400px; margin: 0 auto; width: 100%; }
+        .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 36px; }
+        .page-title { font-size: 28px; font-weight: 700; color: #16181d; letter-spacing: -0.02em; }
+
+        .range-picker { display: flex; background: #fff; border: 1px solid rgba(0,0,0,0.08); border-radius: 9px; padding: 3px; gap: 2px; }
+        .range-btn { font-family: inherit; font-size: 12px; font-weight: 600; padding: 6px 14px; border: none; border-radius: 6px; cursor: pointer; background: transparent; color: #8a8f97; transition: all 0.15s; }
+        .range-btn.on { background: #16181d; color: #ffffff; }
+
+        .filter-toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; gap: 12px; flex-wrap: wrap; }
+        .search-box { padding: 9px 14px; border: 1px solid #dfe1e4; border-radius: 8px; font-size: 13.5px; width: 280px; outline: none; background: #fff; font-family: inherit; transition: border-color 0.15s; }
+        .search-box:focus { border-color: #16181d; }
+        .filter-tabs { display: flex; gap: 6px; }
+        .filter-tab-btn { padding: 7px 14px; font-size: 12.5px; font-weight: 600; background: #fff; border: 1px solid #e2e4e7; border-radius: 6px; cursor: pointer; color: #5b5f66; transition: all 0.15s; }
+        .filter-tab-btn.active { background: #16181d; color: #fff; border-color: #16181d; }
+
+        .table-card { background: #ffffff; border: 1px solid rgba(0,0,0,0.07); border-radius: 16px; padding: 28px; box-shadow: 0 1px 2px rgba(0,0,0,0.02); margin-bottom: 22px; }
+        .section-title { font-size: 14.5px; font-weight: 700; color: #16181d; margin-bottom: 18px; }
         .tbl { width: 100%; border-collapse: collapse; }
-        .tbl th { text-align: left; font-size: 11px; font-weight: 600; color: #999999; padding: 0 0 14px; border-bottom: 1px solid rgba(0,0,0,.06); }
-        .tbl td { padding: 16px 0; border-bottom: 1px solid rgba(0,0,0,.04); font-size: 14px; color: #1a1a1a; vertical-align: middle; }
-        
+        .tbl th { text-align: left; font-size: 10.5px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: #9599a1; padding: 0 0 12px; border-bottom: 1px solid rgba(0,0,0,.06); }
+        .tbl td { padding: 15px 0; border-bottom: 1px solid rgba(0,0,0,.04); font-size: 13.5px; color: #16181d; vertical-align: middle; }
+        .clickable-row { cursor: pointer; transition: background 0.15s; }
+        .clickable-row:hover td { background: #fafafb; }
+
         .prod-cell { display: flex; align-items: center; gap: 12px; }
-        .prod-img { width: 40px; height: 40px; border-radius: 6px; object-fit: cover; border: 1px solid rgba(0,0,0,0.06); }
-        .s-badge { padding: 4px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; display: inline-block; }
-        .s-badge.active { background: #eaf6ed; color: #1a8a4a; }
-        .s-badge.draft { background: #f5f5f5; color: #666666; }
-        .s-badge.pending { background: #fff5ea; color: #b98900; }
-        .s-badge.fulfilled { background: #eaf6ed; color: #1a8a4a; }
+        .prod-img { width: 38px; height: 38px; border-radius: 6px; object-fit: cover; border: 1px solid rgba(0,0,0,0.07); }
+        .s-badge { padding: 3px 10px; border-radius: 20px; font-size: 11.5px; font-weight: 600; display: inline-block; }
+        .s-badge.active { background: #e7f6ec; color: #1a8a4a; }
+        .s-badge.draft { background: #f0f1f2; color: #6b7076; }
+        .s-badge.pending { background: #fef3e2; color: #b07a00; }
+        .s-badge.fulfilled { background: #e7f6ec; color: #1a8a4a; }
 
-        /* BULK BAR */
-        .bulk-bar { display: flex; align-items: center; justify-content: space-between; background: #000; color: #fff; padding: 12px 24px; border-radius: 10px; margin-bottom: 16px; font-size: 14px; }
+        .bulk-bar { display: flex; align-items: center; justify-content: space-between; background: #16181d; color: #fff; padding: 12px 22px; border-radius: 10px; margin-bottom: 16px; font-size: 13.5px; }
         .bulk-actions-btns { display: flex; gap: 10px; }
-        .btn-bulk-op { background: rgba(255,255,255,0.15); color: #fff; border: none; padding: 6px 12px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; }
-        .btn-bulk-op.danger { background: #e11d48; }
+        .btn-bulk-op { background: rgba(255,255,255,0.14); color: #fff; border: none; padding: 6px 12px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; transition: background 0.15s; }
+        .btn-bulk-op:hover { background: rgba(255,255,255,0.22); }
+        .btn-bulk-op.danger { background: #c81e3a; }
+        .btn-bulk-op.danger:hover { background: #a8172f; }
 
-        /* SETTINGS LAYOUT */
-        .settings-grid { display: grid; grid-template-columns: 1fr 2fr; gap: 32px; padding-top: 12px; }
-        .settings-meta-info h3 { font-size: 16px; font-weight: 600; color: #1a1a1a; margin-bottom: 6px; }
-        .settings-meta-info p { font-size: 13px; color: #6d7175; line-height: 1.4; }
-        .toggle-row { display: flex; align-items: center; justify-content: space-between; padding: 16px 0; border-bottom: 1px solid #f1f2f4; }
-        .checkbox-custom { width: 18px; height: 18px; accent-color: #008060; cursor: pointer; }
-        .btn-settings-save { padding: 12px 24px; background: #008060; color: #fff; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; float: right; margin-top: 12px; }
+        .settings-grid { display: grid; grid-template-columns: 1fr 2fr; gap: 32px; padding-top: 8px; }
+        .settings-meta-info h3 { font-size: 15px; font-weight: 600; color: #16181d; margin-bottom: 6px; }
+        .settings-meta-info p { font-size: 12.5px; color: #7a7f87; line-height: 1.5; }
+        .toggle-row { display: flex; align-items: center; justify-content: space-between; padding: 15px 0; border-bottom: 1px solid #f1f2f4; font-size: 13.5px; }
+        .toggle-row:last-child { border-bottom: none; }
+        .checkbox-custom { width: 17px; height: 17px; accent-color: #16181d; cursor: pointer; }
+        .btn-settings-save { padding: 11px 22px; background: #16181d; color: #fff; border: none; border-radius: 8px; font-weight: 600; font-size: 13.5px; cursor: pointer; float: right; margin-top: 8px; transition: background 0.15s; }
+        .btn-settings-save:hover { background: #2a2d34; }
 
-        /* OVERVIEW & CHART */
-        .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 24px; }
-        .stat-card { background: #ffffff; border: 1px solid rgba(0,0,0,0.06); border-radius: 16px; padding: 24px; cursor: pointer; }
-        .stat-card.on { border-color: #000000; box-shadow: inset 0 0 0 1px #000; }
-        .stat-lbl { font-size: 12px; font-weight: 600; text-transform: uppercase; color: #999999; margin-bottom: 10px; }
-        .stat-val { font-size: 32px; font-weight: 800; color: #000000; }
-        .chart-card { background: #ffffff; border: 1px solid rgba(0,0,0,0.06); border-radius: 20px; padding: 32px 32px 16px; margin-bottom: 24px; }
-        .chart-meta-val { font-size: 36px; font-weight: 800; }
+        .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 22px; }
+        .stat-card { background: #ffffff; border: 1px solid rgba(0,0,0,0.07); border-radius: 14px; padding: 22px; cursor: pointer; transition: border-color 0.15s; }
+        .stat-card.on { border-color: #16181d; box-shadow: inset 0 0 0 1px #16181d; }
+        .stat-lbl { font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: #9599a1; margin-bottom: 10px; }
+        .stat-val { font-size: 28px; font-weight: 700; color: #16181d; letter-spacing: -0.01em; }
+        .stat-delta { font-size: 12px; color: #8a8f97; margin-top: 6px; }
+
+        .chart-card { background: #ffffff; border: 1px solid rgba(0,0,0,0.07); border-radius: 16px; padding: 28px 28px 14px; margin-bottom: 22px; }
+        .chart-eyebrow { font-size: 13px; font-weight: 700; color: #16181d; }
+        .chart-meta-row { display: flex; align-items: baseline; gap: 10px; margin-top: 4px; }
+        .chart-meta-sub { font-size: 12px; color: #9599a1; font-weight: 500; }
+        .chart-meta-val { font-size: 30px; font-weight: 700; color: #16181d; letter-spacing: -0.01em; }
+        .chart-range-pill { font-size: 11.5px; font-weight: 600; color: #6b7076; background: #f3f3f4; padding: 5px 10px; border-radius: 6px; }
         .chart-svg { width: 100%; display: block; cursor: crosshair; overflow: visible; }
-        .day-row { display: flex; padding: 16px 0 10px; border-top: 1px solid #fafafa; }
-        .day-lbl { flex: 1; text-align: center; font-size: 12px; color: #999999; }
-        .bottom-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 24px; }
-        .activity-item { padding: 14px 0; border-bottom: 1px solid rgba(0,0,0,0.04); }
-        .activity-title { font-weight: 700; font-size: 14px; color: #000000; }
-        .activity-detail { color: #666666; font-size: 13px; }
-        .activity-time { color: #aaaaaa; font-size: 12px; }
+        .grid-line { stroke: rgba(0,0,0,0.05); stroke-width: 1; }
+        .day-row { display: flex; padding: 14px 0 4px; border-top: 1px solid #f1f2f4; margin-top: 6px; }
+        .day-lbl { flex: 1; text-align: center; font-size: 11.5px; font-weight: 500; color: #9599a1; }
 
-        /* MODALS */
-        .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 2000; backdrop-filter: blur(4px); }
-        .modal-content { background: #f6f6f7; border-radius: 14px; width: 100%; max-width: 780px; display: flex; flex-direction: column; max-height: 90vh; overflow: hidden; }
-        .modal-header { padding: 20px 24px; background: #fff; border-bottom: 1px solid rgba(0,0,0,0.06); display: flex; justify-content: space-between; align-items: center; }
+        .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(15,16,18,0.45); display: flex; align-items: center; justify-content: center; z-index: 2000; backdrop-filter: blur(4px); }
+        .modal-content { background: #f7f7f8; border-radius: 14px; width: 100%; max-width: 780px; display: flex; flex-direction: column; max-height: 90vh; overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,0.25); }
+        .modal-header { padding: 20px 24px; background: #fff; border-bottom: 1px solid rgba(0,0,0,0.07); display: flex; justify-content: space-between; align-items: center; }
+        .modal-header h3 { font-size: 15px; font-weight: 700; color: #16181d; }
         .modal-body { padding: 24px; overflow-y: auto; display: grid; grid-template-columns: 2fr 1fr; gap: 16px; }
-        .shopify-card { background: #fff; border: 1px solid rgba(0,0,0,0.06); border-radius: 8px; padding: 18px; margin-bottom: 14px; }
-        .card-sub-title { font-size: 13px; font-weight: 700; margin-bottom: 12px; text-transform: uppercase; color: #555; }
+        .shopify-card { background: #fff; border: 1px solid rgba(0,0,0,0.07); border-radius: 10px; padding: 18px; margin-bottom: 14px; }
+        .card-sub-title { font-size: 11.5px; font-weight: 700; margin-bottom: 12px; letter-spacing: 0.04em; text-transform: uppercase; color: #7a7f87; }
         .form-group { margin-bottom: 12px; }
-        .form-label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; color: #222; }
-        .form-input, .form-textarea, .form-select { width: 100%; padding: 10px 12px; border: 1px solid #ccc; border-radius: 6px; font-family: inherit; font-size: 14px; background: #fff; outline: none; }
+        .form-label { display: block; font-size: 12.5px; font-weight: 600; margin-bottom: 6px; color: #4a4e55; }
+        .form-input, .form-textarea, .form-select { width: 100%; padding: 10px 12px; border: 1px solid #d9dbdf; border-radius: 7px; font-family: inherit; font-size: 13.5px; background: #fff; outline: none; transition: border-color 0.15s; }
+        .form-input:focus, .form-textarea:focus, .form-select:focus { border-color: #16181d; }
         .pricing-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-        .profit-bar { display: flex; justify-content: space-between; background: #fafafa; padding: 10px; border-radius: 6px; border: 1px dashed #ddd; margin-top: 10px; font-size: 12px; }
-        .modal-footer { padding: 16px 24px; background: #fff; border-top: 1px solid rgba(0,0,0,0.06); display: flex; justify-content: flex-end; gap: 12px; }
-        .btn-save { padding: 10px 18px; background: #008060; color: white; font-weight: 600; border: none; border-radius: 6px; cursor: pointer; }
-        .btn-close { padding: 10px 18px; background: #fff; border: 1px solid #ccc; color: #333; font-weight: 600; border-radius: 6px; cursor: pointer; }
-        .btn-fulfill-action { background: #008060; color: #fff; border: none; padding: 6px 12px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; }
+        .profit-bar { display: flex; justify-content: space-between; background: #f7f7f8; padding: 10px 12px; border-radius: 7px; border: 1px solid #e8e9eb; margin-top: 10px; font-size: 12px; color: #4a4e55; }
+        .modal-footer { padding: 16px 24px; background: #fff; border-top: 1px solid rgba(0,0,0,0.07); display: flex; justify-content: flex-end; gap: 10px; }
+        .btn-save { padding: 10px 18px; background: #16181d; color: white; font-weight: 600; font-size: 13.5px; border: none; border-radius: 7px; cursor: pointer; transition: background 0.15s; }
+        .btn-save:hover { background: #2a2d34; }
+        .btn-close { padding: 10px 18px; background: #fff; border: 1px solid #d9dbdf; color: #4a4e55; font-weight: 600; font-size: 13.5px; border-radius: 7px; cursor: pointer; transition: background 0.15s; }
+        .btn-close:hover { background: #f3f3f4; }
+        .btn-fulfill-action { background: #16181d; color: #fff; border: none; padding: 6px 12px; border-radius: 6px; font-size: 11.5px; font-weight: 600; cursor: pointer; transition: background 0.15s; }
+        .btn-fulfill-action:hover { background: #2a2d34; }
+
+        @media print {
+          body * { visibility: hidden; }
+          .printable-invoice, .printable-invoice * { visibility: visible; }
+          .printable-invoice { position: absolute; left: 0; top: 0; width: 100%; }
+        }
       `}</style>
 
+      <div className="toast-container">
+        {toasts.map((t) => (
+          <div key={t.id} className={`toast-item ${t.type === "error" ? "error" : ""}`}>
+            <span className="toast-dot" /> {t.text}
+          </div>
+        ))}
+      </div>
+
       <div className="layout">
-        {/* SIDEBAR */}
         <aside className="sidebar">
-          <div className="s-logo">{storeName.split(" ")[0] || "Avelo"}.</div>
-          
+          <div className="s-logo">{storeName.split(" ")[0] || "Avelo"}</div>
+
           {[
             { label: "Overview", key: "overview" },
             { label: "Products", key: "products" },
@@ -477,23 +551,21 @@ export default function Dashboard(): ReactNode {
             </div>
           ))}
 
-          {/* ปุ่มเปิด Editor (สีน้ำเงินเด่นชัด) */}
           <button className="sidebar-btn-editor" onClick={() => router.push("/editor")}>
-            ✏️ Open Editor
+            Open Editor
           </button>
 
           <button className="sidebar-btn-new" onClick={() => setShowProductModal(true)}>
-            + Add Product
+            Add Product
           </button>
 
-          <div className="s-logout" onClick={handleLogout} style={{ marginTop: "auto" }}>→ Log out</div>
+          <div className="s-logout" onClick={handleLogout} style={{ marginTop: "auto" }}>Log out</div>
         </aside>
 
-        {/* MAIN PANEL */}
         <main className="main">
           <div className="page-header">
             <div>
-              <p style={{ textTransform: "uppercase", letterSpacing: "0.1em", color: "#999999", fontSize: 11, fontWeight: 600, marginBottom: 6 }}>Store Control</p>
+              <p style={{ textTransform: "uppercase", letterSpacing: "0.1em", color: "#9599a1", fontSize: 11, fontWeight: 600, marginBottom: 6 }}>Store Control</p>
               <h1 className="page-title">{section.charAt(0).toUpperCase() + section.slice(1)}</h1>
             </div>
             {section !== "settings" && (
@@ -509,7 +581,6 @@ export default function Dashboard(): ReactNode {
             )}
           </div>
 
-          {/* ── SECTION: OVERVIEW & INVENTORY ADJUSTMENT LOGS ── */}
           {section === "overview" && (
             <>
               <div className="stats-grid">
@@ -531,220 +602,265 @@ export default function Dashboard(): ReactNode {
                 </div>
               </div>
 
-              {/* กราฟเอฟเฟกต์จุดขยับตามเมาส์ */}
               <div className="chart-card">
-                <div className="chart-head">
+                <div className="chart-head" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "18px" }}>
                   <div>
-                    <p style={{ fontSize: "14px", fontWeight: "700", color: "#000" }}>Store Trend</p>
+                    <p className="chart-eyebrow">Store Trend</p>
                     <div className="chart-meta-row">
-                      <span style={{ fontSize: "12px", color: "#888" }}>{metricLabel} — {data[activeIdx]?.label}</span>
                       <span className="chart-meta-val">{fmt(activeVal)}</span>
+                      <span className="chart-meta-sub">{metricLabel} · {data[activeIdx]?.label}</span>
                     </div>
                   </div>
-                  <span style={{ fontSize: "12px", background: "#f5f5f5", padding: "4px 8px", borderRadius: "6px" }}>{RANGE_LABELS[range]}</span>
+                  <div className="chart-range-pill">{RANGE_LABELS[range]}</div>
                 </div>
-                <div className="chart-svg-wrap">
-                  <svg key={animKey} ref={svgRef} className="chart-svg" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" onMouseMove={handleMouseMove} onMouseLeave={() => setHoverIdx(null)}>
-                    <defs>
-                      <linearGradient id="ag" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="#2563eb" stopOpacity="0.08" />
-                        <stop offset="100%" stopColor="#2563eb" stopOpacity="0" />
-                      </linearGradient>
-                    </defs>
-                    <path ref={areaRef} d={areaD} fill="url(#ag)" style={{ opacity: 0 }} />
-                    <path ref={lineRef} d={pathD} fill="none" stroke="#2563eb" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-                    {hoverIdx !== null && (
-                      <g>
-                        <line x1={dotPos.x} y1={0} x2={dotPos.x} y2={H} stroke="rgba(0,0,0,0.06)" strokeWidth="1.2" strokeDasharray="4 4" />
-                        <circle cx={dotPos.x} cy={dotPos.y} r="6" fill="#ffffff" stroke="#2563eb" strokeWidth="2" />
-                      </g>
-                    )}
-                  </svg>
+
+                <svg ref={svgRef} className="chart-svg" viewBox={`0 0 ${W} ${H}`} onMouseMove={handleMouseMove} onMouseLeave={() => setHoverIdx(null)}>
+                  <defs>
+                    <linearGradient id="areaGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="#16181d" stopOpacity="0.12" />
+                      <stop offset="100%" stopColor="#16181d" stopOpacity="0" />
+                    </linearGradient>
+                  </defs>
+
+                  {gridValues.map((val, i) => {
+                    const y = PAD_Y + (1 - i / 4) * (H - PAD_Y * 2);
+                    return <line key={i} x1={PAD_X} y1={y} x2={W - PAD_X} y2={y} className="grid-line" />;
+                  })}
+
+                  <path ref={areaRef} d={areaD} fill="url(#areaGrad)" />
+                  <path ref={lineRef} d={pathD} fill="none" stroke="#16181d" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+
+                  {hoverIdx !== null && pts[hoverIdx] && (
+                    <line x1={pts[hoverIdx].x} y1={PAD_Y} x2={pts[hoverIdx].x} y2={H - PAD_Y} stroke="rgba(0,0,0,0.12)" strokeDasharray="3 3" />
+                  )}
+
+                  <circle cx={dotPos.x} cy={dotPos.y} r="5" fill="#ffffff" stroke="#16181d" strokeWidth="3" style={{ filter: "drop-shadow(0 2px 4px rgba(0,0,0,0.15))" }} />
+                </svg>
+
+                <div className="day-row">
+                  {data.map((item, i) => (
+                    <div key={i} className="day-lbl" style={{ color: activeIdx === i ? "#16181d" : undefined, fontWeight: activeIdx === i ? 700 : undefined }}>
+                      {item.label}
+                    </div>
+                  ))}
                 </div>
-                <div className="day-row">{data.map((d) => <span key={d.label} className="day-lbl">{d.label}</span>)}</div>
               </div>
 
-              {/* ตารางประวัติคลังสินค้า (Inventory logs) */}
               <div className="table-card">
-                <div className="section-title">📦 Inventory Realtime Adjustment Logs</div>
+                <div className="section-title">Recent Orders</div>
                 <table className="tbl">
                   <thead>
-                    <tr><th>Log ID</th><th>Product Name</th><th>Type</th><th>Quantity Change</th><th>Activity Context</th><th>Timestamp</th></tr>
+                    <tr>
+                      <th>Order ID</th>
+                      <th>Customer</th>
+                      <th>Status</th>
+                      <th>Total</th>
+                      <th>Date</th>
+                    </tr>
                   </thead>
                   <tbody>
-                    {stockLogs.map((log) => (
-                      <tr key={log.id}>
-                        <td style={{ fontFamily: "monospace", color: "#666" }}>{log.id}</td>
-                        <td style={{ fontWeight: 600 }}>{log.productName}</td>
+                    {orders.slice(0, 5).map((ord) => (
+                      <tr key={ord.id} className="clickable-row" onClick={() => setSelectedOrder(ord)}>
+                        <td style={{ fontWeight: 600 }}>{ord.id}</td>
+                        <td>{ord.customer || "Guest Customer"}</td>
                         <td>
-                          <span className={`s-badge ${log.type === "In" ? "active" : "draft"}`}>
-                            Stock {log.type}
+                          <span className={`s-badge ${ord.status.toLowerCase()}`}>
+                            {ord.status}
                           </span>
                         </td>
-                        <td style={{ fontWeight: 700, color: log.type === "In" ? "#1a8a4a" : "#e11d48" }}>
-                          {log.type === "In" ? "+" : "-"}{log.qty} Units
-                        </td>
-                        <td style={{ color: "#555" }}>{log.reason}</td>
-                        <td style={{ color: "#aaa", fontSize: "13px" }}>{log.timestamp}</td>
+                        <td>{currency === "USD" ? "$" : currency === "EUR" ? "€" : "฿"}{(ord.total || 0).toFixed(2)}</td>
+                        <td style={{ color: "#7a7f87" }}>{ord.dateString}</td>
                       </tr>
                     ))}
+                    {orders.length === 0 && (
+                      <tr>
+                        <td colSpan={5} style={{ textAlign: "center", color: "#8a8f97", padding: "20px" }}>No orders found</td>
+                      </tr>
+                    )}
                   </tbody>
                 </table>
-              </div>
-
-              <div className="bottom-grid">
-                <div className="table-card">
-                  <div className="section-title">Live Pulse Status</div>
-                  <div style={{ display: "flex", gap: 6, alignItems: "flex-end", height: 100, marginTop: 16 }}>
-                    {livePulse.map((value, index) => (
-                      <div key={index} style={{ flex: 1, height: `${value}%`, borderRadius: 4, background: "#2563eb" }} />
-                    ))}
-                  </div>
-                </div>
-                <div className="table-card">
-                  <div className="section-title">Recent System Activity</div>
-                  <div style={{ marginTop: 8 }}>
-                    {liveActivity.map((item, idx) => (
-                      <div key={idx} className="activity-item">
-                        <div className="activity-title">{item.title}</div>
-                        <div className="activity-detail">{item.detail}</div>
-                        <div className="activity-time">{item.time}</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
               </div>
             </>
           )}
 
-          {/* ── SECTION: PRODUCTS WITH BULK ACTIONS ── */}
           {section === "products" && (
-            <>
+            <div className="table-card">
+              <div className="filter-toolbar">
+                <input
+                  type="text"
+                  placeholder="Search products or SKU..."
+                  value={productSearch}
+                  onChange={(e) => setProductSearch(e.target.value)}
+                  className="search-box"
+                />
+                <div className="filter-tabs">
+                  {(["All", "Active", "Draft"] as const).map((st) => (
+                    <button
+                      key={st}
+                      className={`filter-tab-btn${productStatusFilter === st ? " active" : ""}`}
+                      onClick={() => setProductStatusFilter(st)}
+                    >
+                      {st}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               {selectedProductIds.length > 0 && (
                 <div className="bulk-bar">
-                  <div>Selected <strong>{selectedProductIds.length}</strong> products</div>
+                  <span>{selectedProductIds.length} product(s) selected</span>
                   <div className="bulk-actions-btns">
-                    <button className="btn-bulk-op" onClick={handleBulkArchive}>Hide / Change to Draft</button>
-                    <button className="btn-bulk-op danger" onClick={handleBulkDelete}>Delete Selected Items</button>
+                    <button className="btn-bulk-op" onClick={handleBulkArchive}>Move to Draft</button>
+                    <button className="btn-bulk-op danger" onClick={handleBulkDelete}>Delete Selected</button>
                   </div>
                 </div>
               )}
 
-              <div className="table-card">
-                <div className="section-title">All Products Inventory</div>
-                <table className="tbl">
-                  <thead>
-                    <tr>
-                      <th style={{ width: "40px" }}>
-                        <input type="checkbox" checked={products.length > 0 && selectedProductIds.length === products.length} onChange={handleSelectAllProducts} className="checkbox-custom" />
-                      </th>
-                      <th>Product</th>
-                      <th>Status</th>
-                      <th>Inventory</th>
-                      <th>SKU</th>
-                      <th>Price</th>
+              <table className="tbl">
+                <thead>
+                  <tr>
+                    <th style={{ width: "30px" }}>
+                      <input
+                        type="checkbox"
+                        className="checkbox-custom"
+                        checked={filteredProducts.length > 0 && selectedProductIds.length === filteredProducts.length}
+                        onChange={handleSelectAllProducts}
+                      />
+                    </th>
+                    <th>Product</th>
+                    <th>SKU</th>
+                    <th>Status</th>
+                    <th>Inventory</th>
+                    <th>Price</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredProducts.map((p) => (
+                    <tr key={p.id} className="clickable-row">
+                      <td>
+                        <input
+                          type="checkbox"
+                          className="checkbox-custom"
+                          checked={selectedProductIds.includes(p.id)}
+                          onChange={() => handleToggleSelectProduct(p.id)}
+                        />
+                      </td>
+                      <td onClick={() => setEditingProduct(p)}>
+                        <div className="prod-cell">
+                          <img src={p.image} alt={p.name} className="prod-img" />
+                          <span style={{ fontWeight: 600 }}>{p.name}</span>
+                        </div>
+                      </td>
+                      <td onClick={() => setEditingProduct(p)} style={{ color: "#7a7f87", fontSize: "12.5px" }}>{p.sku || "N/A"}</td>
+                      <td onClick={() => setEditingProduct(p)}>
+                        <span className={`s-badge ${p.status.toLowerCase()}`}>
+                          {p.status}
+                        </span>
+                      </td>
+                      <td onClick={() => setEditingProduct(p)}>{p.stock} in stock</td>
+                      <td onClick={() => setEditingProduct(p)} style={{ fontWeight: 600 }}>{currency === "USD" ? "$" : currency === "EUR" ? "€" : "฿"}{p.price.toFixed(2)}</td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {products.map((product) => (
-                      <tr key={product.id}>
-                        <td>
-                          <input type="checkbox" checked={selectedProductIds.includes(product.id)} onChange={() => handleToggleSelectProduct(product.id)} className="checkbox-custom" />
-                        </td>
-                        <td>
-                          <div className="prod-cell">
-                            <img src={product.image} className="prod-img" alt="" />
-                            <div>
-                              <div style={{ fontWeight: 600 }}>{product.name}</div>
-                              <div style={{ fontSize: "12px", color: "#6d7175" }}>{product.category}</div>
-                            </div>
-                          </div>
-                        </td>
-                        <td>
-                          <span className={`s-badge ${product.status === "Active" ? "active" : "draft"}`}>
-                            {product.status}
-                          </span>
-                        </td>
-                        <td style={{ fontWeight: 500, color: product.stock === 0 ? "#e11d48" : "#1a1a1a" }}>
-                          {product.stock === 0 ? "Out of Stock" : `${product.stock} available`}
-                        </td>
-                        <td style={{ color: "#6d7175", fontFamily: "monospace" }}>{product.sku}</td>
-                        <td style={{ fontWeight: 600 }}>
-                          {currency === "USD" ? "$" : currency === "EUR" ? "€" : "฿"}{product.price.toLocaleString()}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </>
+                  ))}
+                  {filteredProducts.length === 0 && (
+                    <tr>
+                      <td colSpan={6} style={{ textAlign: "center", color: "#8a8f97", padding: "30px" }}>No products match your search</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
           )}
 
-          {/* ── SECTION: ORDERS ── */}
           {section === "orders" && (
             <div className="table-card">
-              <div className="section-title">Recent Customer Orders</div>
+              <div className="filter-toolbar">
+                <input
+                  type="text"
+                  placeholder="Search orders or customer..."
+                  value={orderSearch}
+                  onChange={(e) => setOrderSearch(e.target.value)}
+                  className="search-box"
+                />
+                <div className="filter-tabs">
+                  {(["All", "Pending", "Fulfilled"] as const).map((st) => (
+                    <button
+                      key={st}
+                      className={`filter-tab-btn${orderStatusFilter === st ? " active" : ""}`}
+                      onClick={() => setOrderStatusFilter(st)}
+                    >
+                      {st}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               <table className="tbl">
                 <thead>
                   <tr>
                     <th>Order ID</th>
-                    <th>Date</th>
                     <th>Customer</th>
-                    <th>Fulfillment Status</th>
+                    <th>Status</th>
                     <th>Tracking</th>
                     <th>Total</th>
-                    <th>Actions</th>
+                    <th>Date</th>
+                    <th style={{ textAlign: "right" }}>Action</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {orders.map((order) => (
-                    <tr key={order.id}>
-                      <td style={{ fontWeight: 600, color: "#2563eb" }}>{order.id}</td>
-                      <td style={{ color: "#6d7175" }}>{order.dateString}</td>
-                      <td style={{ fontWeight: 500 }}>{order.customer_name || "Guest User"}</td>
-                      <td>
-                        <span className={`s-badge ${order.status === "Fulfilled" ? "fulfilled" : "pending"}`}>
-                          {order.status}
+                  {filteredOrders.map((ord) => (
+                    <tr key={ord.id} className="clickable-row">
+                      <td onClick={() => setSelectedOrder(ord)} style={{ fontWeight: 600 }}>{ord.id}</td>
+                      <td onClick={() => setSelectedOrder(ord)}>{ord.customer || "Guest Customer"}</td>
+                      <td onClick={() => setSelectedOrder(ord)}>
+                        <span className={`s-badge ${ord.status.toLowerCase()}`}>
+                          {ord.status}
                         </span>
                       </td>
-                      <td style={{ fontFamily: "monospace", color: "#444" }}>
-                        {order.trackingNumber || <span style={{ color: "#bbb" }}>—</span>}
-                      </td>
-                      <td style={{ fontWeight: 600 }}>
-                        {currency === "USD" ? "$" : currency === "EUR" ? "€" : "฿"}{order.total_price.toLocaleString()}
-                      </td>
-                      <td>
-                        {order.status === "Pending" ? (
-                          <button className="btn-fulfill-action" onClick={() => setActiveFulfillOrder(order)}>
-                            Fulfill Order
+                      <td onClick={() => setSelectedOrder(ord)} style={{ color: "#7a7f87", fontSize: "12.5px" }}>{ord.trackingNumber || "—"}</td>
+                      <td onClick={() => setSelectedOrder(ord)}>{currency === "USD" ? "$" : currency === "EUR" ? "€" : "฿"}{(ord.total || 0).toFixed(2)}</td>
+                      <td onClick={() => setSelectedOrder(ord)} style={{ color: "#7a7f87" }}>{ord.dateString}</td>
+                      <td style={{ textAlign: "right" }}>
+                        {ord.status === "Pending" ? (
+                          <button className="btn-fulfill-action" onClick={() => setActiveFulfillOrder(ord)}>
+                            Fulfill
                           </button>
                         ) : (
-                          <span style={{ fontSize: "12px", color: "#1a8a4a", fontWeight: 600 }}>✓ Completed</span>
+                          <button className="btn-close" style={{ padding: "4px 10px", fontSize: "11.5px" }} onClick={() => setSelectedOrder(ord)}>
+                            View
+                          </button>
                         )}
                       </td>
                     </tr>
                   ))}
+                  {filteredOrders.length === 0 && (
+                    <tr>
+                      <td colSpan={7} style={{ textAlign: "center", color: "#8a8f97", padding: "30px" }}>No orders match your filter</td>
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </div>
           )}
 
-          {/* ── SECTION: USERS ── */}
           {section === "users" && (
             <div className="table-card">
-              <div className="section-title">Store Personnel & Users</div>
+              <div className="section-title">Store Users & Permissions</div>
               <table className="tbl">
                 <thead>
-                  <tr><th>User ID</th><th>Full Name</th><th>Email Address</th><th>Role Access</th><th>Status</th></tr>
+                  <tr>
+                    <th>Name</th>
+                    <th>Email</th>
+                    <th>Role</th>
+                    <th>Status</th>
+                  </tr>
                 </thead>
                 <tbody>
                   {users.map((u) => (
                     <tr key={u.id}>
-                      <td style={{ color: "#888" }}>#{u.id}</td>
                       <td style={{ fontWeight: 600 }}>{u.name}</td>
-                      <td>{u.email}</td>
-                      <td><strong>{u.role}</strong></td>
-                      <td><span className={`s-badge ${u.status === "Active" ? "active" : "pending"}`}>{u.status}</span></td>
+                      <td style={{ color: "#7a7f87" }}>{u.email}</td>
+                      <td><span className="s-badge active">{u.role}</span></td>
+                      <td><span className={`s-badge ${u.status.toLowerCase()}`}>{u.status}</span></td>
                     </tr>
                   ))}
                 </tbody>
@@ -752,216 +868,278 @@ export default function Dashboard(): ReactNode {
             </div>
           )}
 
-          {/* ── SECTION: SETTINGS ── */}
           {section === "settings" && (
-            <form onSubmit={handleSaveSettings} className="table-card">
-              <div className="section-title">⚙️ General & Infrastructure Settings</div>
-              
-              <div className="settings-grid">
-                <div className="settings-meta-info">
-                  <h3>Store Identity</h3>
-                  <p>Configure internal branding data variables and currency formatting contexts.</p>
-                </div>
-                <div className="shopify-card">
-                  <div className="form-group">
-                    <label className="form-label">Store Name</label>
-                    <input type="text" className="form-input" value={storeName} onChange={(e) => setStoreName(e.target.value)} />
+            <div className="table-card">
+              <div className="section-title">Store Configuration</div>
+              <form onSubmit={handleSaveSettings}>
+                <div className="settings-grid" style={{ marginBottom: "24px", borderBottom: "1px solid #f1f2f4", paddingBottom: "24px" }}>
+                  <div className="settings-meta-info">
+                    <h3>General Details</h3>
+                    <p>Configure store name, email address, and primary currency.</p>
                   </div>
-                  <div className="form-group">
-                    <label className="form-label">Sender Email</label>
-                    <input type="email" className="form-input" value={storeEmail} onChange={(e) => setStoreEmail(e.target.value)} />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Store Currency</label>
-                    <select className="form-select" value={currency} onChange={(e) => setCurrency(e.target.value)}>
-                      <option value="USD">USD ($)</option>
-                      <option value="EUR">EUR (€)</option>
-                      <option value="THB">THB (฿)</option>
-                    </select>
-                  </div>
-                </div>
-              </div>
-
-              <hr style={{ border: "0", borderTop: "1px solid #f1f2f4", margin: "24px 0" }} />
-
-              <div className="settings-grid">
-                <div className="settings-meta-info">
-                  <h3>Payment Integration</h3>
-                  <p>Toggle backend transaction pipelines for customer checkouts.</p>
-                </div>
-                <div className="shopify-card">
-                  <div className="toggle-row">
-                    <div>
-                      <div style={{ fontWeight: 600, fontSize: "14px" }}>Stripe Payment Gateway</div>
-                      <div style={{ fontSize: "12px", color: "#6d7175" }}>Accept Visa, Mastercard, and ApplePay instantly.</div>
+                  <div>
+                    <div className="form-group">
+                      <label className="form-label">Store Name</label>
+                      <input type="text" className="form-input" value={storeName} onChange={(e) => setStoreName(e.target.value)} />
                     </div>
-                    <input type="checkbox" className="checkbox-custom" checked={enableStripe} onChange={(e) => setEnableStripe(e.target.checked)} />
-                  </div>
-                  <div className="toggle-row">
-                    <div>
-                      <div style={{ fontWeight: 600, fontSize: "14px" }}>PayPal Express</div>
-                      <div style={{ fontSize: "12px", color: "#6d7175" }}>Allow digital wallet fast-checkout hooks.</div>
+                    <div className="form-group">
+                      <label className="form-label">Support Email</label>
+                      <input type="email" className="form-input" value={storeEmail} onChange={(e) => setStoreEmail(e.target.value)} />
                     </div>
-                    <input type="checkbox" className="checkbox-custom" checked={enablePaypal} onChange={(e) => setEnablePaypal(e.target.checked)} />
-                  </div>
-                  <div className="toggle-row">
-                    <div>
-                      <div style={{ fontWeight: 600, fontSize: "14px" }}>Direct Bank Transfer</div>
-                      <div style={{ fontSize: "12px", color: "#6d7175" }}>Manual upload and reconciliation pipeline.</div>
+                    <div className="form-group">
+                      <label className="form-label">Currency</label>
+                      <select className="form-select" value={currency} onChange={(e) => setCurrency(e.target.value)}>
+                        <option value="USD">USD ($)</option>
+                        <option value="EUR">EUR (€)</option>
+                        <option value="THB">THB (฿)</option>
+                      </select>
                     </div>
-                    <input type="checkbox" className="checkbox-custom" checked={enableBankTransfer} onChange={(e) => setEnableBankTransfer(e.target.checked)} />
                   </div>
                 </div>
-              </div>
 
-              <hr style={{ border: "0", borderTop: "1px solid #f1f2f4", margin: "24px 0" }} />
-
-              <div className="settings-grid">
-                <div className="settings-meta-info">
-                  <h3>Taxes & Logistics</h3>
-                  <p>Setup flat rate shipping rules and automated fiscal margins.</p>
-                </div>
-                <div className="shopify-card">
-                  <div className="form-group">
-                    <label className="form-label">Standard Shipping Rate ({currency})</label>
-                    <input type="text" className="form-input" value={shippingRate} onChange={(e) => setShippingRate(e.target.value)} />
+                <div className="settings-grid">
+                  <div className="settings-meta-info">
+                    <h3>Payment Gateways</h3>
+                    <p>Enable checkout payment providers for customers.</p>
                   </div>
-                  <div className="toggle-row" style={{ borderBottom: "none" }}>
-                    <div>
-                      <div style={{ fontWeight: 600, fontSize: "14px" }}>Automate VAT Calculation</div>
-                      <div style={{ fontSize: "12px", color: "#6d7175" }}>Apply default percentages based on geolocation variables.</div>
+                  <div>
+                    <div className="toggle-row">
+                      <span>Stripe Checkout</span>
+                      <input type="checkbox" className="checkbox-custom" checked={enableStripe} onChange={(e) => setEnableStripe(e.target.checked)} />
                     </div>
-                    <input type="checkbox" className="checkbox-custom" checked={enableVat} onChange={(e) => setEnableVat(e.target.checked)} />
+                    <div className="toggle-row">
+                      <span>PayPal Express</span>
+                      <input type="checkbox" className="checkbox-custom" checked={enablePaypal} onChange={(e) => setEnablePaypal(e.target.checked)} />
+                    </div>
+                    <div className="toggle-row">
+                      <span>Direct Bank Transfer</span>
+                      <input type="checkbox" className="checkbox-custom" checked={enableBankTransfer} onChange={(e) => setEnableBankTransfer(e.target.checked)} />
+                    </div>
+                    <button type="submit" className="btn-settings-save">Save Changes</button>
                   </div>
                 </div>
-              </div>
-
-              <button type="submit" className="btn-settings-save">Save Configurations</button>
-              <div style={{ clear: "both" }} />
-            </form>
+              </form>
+            </div>
           )}
         </main>
       </div>
 
-      {/* ── MODAL: ADD PRODUCT ── */}
       {showProductModal && (
-        <div className="modal-overlay">
-          <form onSubmit={handleShopifyProductSubmit} className="modal-content">
+        <div className="modal-overlay" onClick={() => setShowProductModal(false)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <h2 style={{ fontSize: "18px", fontWeight: "700" }}>Add Shopify Sourced Product</h2>
-              <button type="button" onClick={() => setShowProductModal(false)} style={{ background: "none", border: "none", fontSize: "20px", cursor: "pointer" }}>&times;</button>
+              <h3>Add Product</h3>
+              <button className="btn-close" style={{ padding: "4px 10px" }} onClick={() => setShowProductModal(false)}>✕</button>
             </div>
-            <div className="modal-body">
-              <div className="modal-left">
-                <div className="shopify-card">
-                  <div className="form-group">
-                    <label className="form-label">Title</label>
-                    <input type="text" className="form-input" placeholder="e.g. Winter Air Jacket" value={inputName} onChange={(e) => setInputName(e.target.value)} required />
+            <form onSubmit={handleShopifyProductSubmit}>
+              <div className="modal-body">
+                <div>
+                  <div className="shopify-card">
+                    <div className="card-sub-title">Basic Information</div>
+                    <div className="form-group">
+                      <label className="form-label">Product Name</label>
+                      <input type="text" className="form-input" required placeholder="e.g. Leather Urban Backpack" value={inputName} onChange={(e) => setInputName(e.target.value)} />
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">Description</label>
+                      <textarea className="form-textarea" rows={3} placeholder="Provide product details..." value={inputDescription} onChange={(e) => setInputDescription(e.target.value)} />
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">Image URL</label>
+                      <input type="text" className="form-input" placeholder="https://..." value={inputImageUrl} onChange={(e) => setInputImageUrl(e.target.value)} />
+                    </div>
                   </div>
-                  <div className="form-group">
-                    <label className="form-label">Description</label>
-                    <textarea className="form-textarea" rows={3} placeholder="Provide item marketing insights..." value={inputDescription} onChange={(e) => setInputDescription(e.target.value)} />
+
+                  <div className="shopify-card">
+                    <div className="card-sub-title">Pricing & Profit</div>
+                    <div className="pricing-row">
+                      <div className="form-group">
+                        <label className="form-label">Retail Price</label>
+                        <input type="number" step="0.01" className="form-input" required placeholder="0.00" value={inputPrice} onChange={(e) => setInputPrice(e.target.value)} />
+                      </div>
+                      <div className="form-group">
+                        <label className="form-label">Item Cost</label>
+                        <input type="number" step="0.01" className="form-input" placeholder="0.00" value={inputCost} onChange={(e) => setInputCost(e.target.value)} />
+                      </div>
+                    </div>
+                    <div className="profit-bar">
+                      <span>Estimated Profit per item: <strong>${profit.toFixed(2)}</strong></span>
+                      <span>Margin: <strong>{priceNum > 0 ? ((profit / priceNum) * 100).toFixed(1) : 0}%</strong></span>
+                    </div>
                   </div>
                 </div>
 
-                <div className="shopify-card">
-                  <div className="card-sub-title">Media & assets</div>
-                  <div className="form-group">
-                    <label className="form-label">Image URL</label>
-                    <input type="url" className="form-input" placeholder="https://unsplash.com/..." value={inputImageUrl} onChange={(e) => setInputImageUrl(e.target.value)} />
-                  </div>
-                </div>
-
-                <div className="shopify-card">
-                  <div className="card-sub-title">Pricing matrix</div>
-                  <div className="pricing-row">
+                <div>
+                  <div className="shopify-card">
+                    <div className="card-sub-title">Inventory & Organization</div>
                     <div className="form-group">
-                      <label className="form-label">Price</label>
-                      <input type="number" className="form-input" placeholder="0.00" value={inputPrice} onChange={(e) => setInputPrice(e.target.value)} required />
+                      <label className="form-label">Initial Stock</label>
+                      <input type="number" className="form-input" required placeholder="50" value={inputStock} onChange={(e) => setInputStock(e.target.value)} />
                     </div>
                     <div className="form-group">
-                      <label className="form-label">Cost per item</label>
-                      <input type="number" className="form-input" placeholder="0.00" value={inputCost} onChange={(e) => setInputCost(e.target.value)} />
+                      <label className="form-label">SKU</label>
+                      <input type="text" className="form-input" placeholder="SKU-1002" value={inputSku} onChange={(e) => setInputSku(e.target.value)} />
                     </div>
-                  </div>
-                  <div className="profit-bar">
-                    <span>Margin profit: <strong>${profit.toFixed(2)}</strong></span>
-                    <span>Percentage: <strong>{marginPercentage.toFixed(1)}%</strong></span>
+                    <div className="form-group">
+                      <label className="form-label">Barcode</label>
+                      <input type="text" className="form-input" placeholder="0123456789" value={inputBarcode} onChange={(e) => setInputBarcode(e.target.value)} />
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">Category</label>
+                      <select className="form-select" value={inputCategory} onChange={(e) => setInputCategory(e.target.value)}>
+                        <option value="Electronics">Electronics</option>
+                        <option value="Apparel">Apparel</option>
+                        <option value="Home">Home & Living</option>
+                        <option value="General">General</option>
+                      </select>
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">Status</label>
+                      <select className="form-select" value={inputStatus} onChange={(e) => setInputStatus(e.target.value as "Active" | "Draft")}>
+                        <option value="Active">Active</option>
+                        <option value="Draft">Draft</option>
+                      </select>
+                    </div>
                   </div>
                 </div>
               </div>
-
-              <div className="modal-right">
-                <div className="shopify-card">
-                  <div className="form-group">
-                    <label className="form-label">Status</label>
-                    <select className="form-select" value={inputStatus} onChange={(e) => setInputStatus(e.target.value as any)}>
-                      <option value="Active">Active (Live)</option>
-                      <option value="Draft">Draft (Hidden)</option>
-                    </select>
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Product Category</label>
-                    <select className="form-select" value={inputCategory} onChange={(e) => setInputCategory(e.target.value)}>
-                      <option value="Electronics">Electronics</option>
-                      <option value="Apparel">Apparel</option>
-                      <option value="Accessories">Accessories</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div className="shopify-card">
-                  <div className="card-sub-title">Inventory & Codes</div>
-                  <div className="form-group">
-                    <label className="form-label">SKU (Stock Keeping Unit)</label>
-                    <input type="text" className="form-input" placeholder="AUTO" value={inputSku} onChange={(e) => setInputSku(e.target.value)} />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Barcode (ISBN/GTIN)</label>
-                    <input type="text" className="form-input" placeholder="AUTO" value={inputBarcode} onChange={(e) => setInputBarcode(e.target.value)} />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Initial Quantity</label>
-                    <input type="number" className="form-input" placeholder="0" value={inputStock} onChange={(e) => setInputStock(e.target.value)} required />
-                  </div>
-                </div>
+              <div className="modal-footer">
+                <button type="button" className="btn-close" onClick={() => setShowProductModal(false)}>Cancel</button>
+                <button type="submit" className="btn-save">Save Product</button>
               </div>
-            </div>
-            <div className="modal-footer">
-              <button type="button" className="btn-close" onClick={() => setShowProductModal(false)}>Cancel</button>
-              <button type="submit" className="btn-save">Publish Sourced Item</button>
-            </div>
-          </form>
+            </form>
+          </div>
         </div>
       )}
 
-      {/* ── MODAL: ORDER FULFILLMENT ── */}
-      {activeFulfillOrder && (
-        <div className="modal-overlay">
-          <form onSubmit={handleFulfillSubmit} className="modal-content" style={{ maxWidth: "450px" }}>
+      {editingProduct && (
+        <div className="modal-overlay" onClick={() => setEditingProduct(null)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <h2 style={{ fontSize: "16px", fontWeight: "700" }}>Fulfill Shipment: {activeFulfillOrder.id}</h2>
-              <button type="button" onClick={() => setActiveFulfillOrder(null)} style={{ background: "none", border: "none", fontSize: "20px", cursor: "pointer" }}>&times;</button>
+              <h3>Edit Product</h3>
+              <button className="btn-close" style={{ padding: "4px 10px" }} onClick={() => setEditingProduct(null)}>✕</button>
             </div>
-            <div className="modal-body" style={{ gridTemplateColumns: "1fr", padding: "20px" }}>
-              <div className="shopify-card" style={{ margin: 0 }}>
-                <div style={{ marginBottom: "12px", fontSize: "14px" }}>
-                  Customer Name: <strong>{activeFulfillOrder.customer_name}</strong>
+            <form onSubmit={handleUpdateProductSubmit}>
+              <div className="modal-body">
+                <div>
+                  <div className="shopify-card">
+                    <div className="card-sub-title">Product Details</div>
+                    <div className="form-group">
+                      <label className="form-label">Name</label>
+                      <input type="text" className="form-input" required value={editingProduct.name} onChange={(e) => setEditingProduct({ ...editingProduct, name: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">Image URL</label>
+                      <input type="text" className="form-input" value={editingProduct.image || ""} onChange={(e) => setEditingProduct({ ...editingProduct, image: e.target.value })} />
+                    </div>
+                    <div className="pricing-row">
+                      <div className="form-group">
+                        <label className="form-label">Price</label>
+                        <input type="number" step="0.01" className="form-input" required value={editingProduct.price} onChange={(e) => setEditingProduct({ ...editingProduct, price: parseFloat(e.target.value) || 0 })} />
+                      </div>
+                      <div className="form-group">
+                        <label className="form-label">Stock</label>
+                        <input type="number" className="form-input" required value={editingProduct.stock} onChange={(e) => setEditingProduct({ ...editingProduct, stock: parseInt(e.target.value) || 0 })} />
+                      </div>
+                    </div>
+                  </div>
                 </div>
+                <div>
+                  <div className="shopify-card">
+                    <div className="card-sub-title">Status & SKU</div>
+                    <div className="form-group">
+                      <label className="form-label">SKU</label>
+                      <input type="text" className="form-input" value={editingProduct.sku || ""} onChange={(e) => setEditingProduct({ ...editingProduct, sku: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">Status</label>
+                      <select className="form-select" value={editingProduct.status} onChange={(e) => setEditingProduct({ ...editingProduct, status: e.target.value as "Active" | "Draft" })}>
+                        <option value="Active">Active</option>
+                        <option value="Draft">Draft</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div className="modal-footer">
+                <button type="button" className="btn-close" onClick={() => setEditingProduct(null)}>Cancel</button>
+                <button type="submit" className="btn-save">Update Product</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {activeFulfillOrder && (
+        <div className="modal-overlay" onClick={() => setActiveFulfillOrder(null)}>
+          <div className="modal-content" style={{ maxWidth: "450px" }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Fulfill Order {activeFulfillOrder.id}</h3>
+              <button className="btn-close" style={{ padding: "4px 10px" }} onClick={() => setActiveFulfillOrder(null)}>✕</button>
+            </div>
+            <form onSubmit={handleFulfillSubmit}>
+              <div style={{ padding: "24px" }}>
                 <div className="form-group">
-                  <label className="form-label">Logistics Tracking Number</label>
-                  <input type="text" className="form-input" placeholder="e.g. TRK901234812" value={inputTracking} onChange={(e) => setInputTracking(e.target.value)} required />
+                  <label className="form-label">Tracking Number / Carrier</label>
+                  <input type="text" className="form-input" required placeholder="e.g. UPS-98234710" value={inputTracking} onChange={(e) => setInputTracking(e.target.value)} />
                 </div>
-                <p style={{ fontSize: "12px", color: "#6d7175", lineHeight: "1.4" }}>
-                  การกดยืนยันจะเป็นการบันทึกหมายเลข Tracking ลงระบบ และเปลี่ยนสถานะ Order เป็น <strong>Fulfilled</strong>
-                </p>
+              </div>
+              <div className="modal-footer">
+                <button type="button" className="btn-close" onClick={() => setActiveFulfillOrder(null)}>Cancel</button>
+                <button type="submit" className="btn-save">Confirm Fulfillment</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {selectedOrder && (
+        <div className="modal-overlay" onClick={() => setSelectedOrder(null)}>
+          <div className="modal-content printable-invoice" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Order Invoice #{selectedOrder.id}</h3>
+              <div style={{ display: "flex", gap: "10px" }}>
+                <button className="btn-close" onClick={() => window.print()}>Print Invoice</button>
+                <button className="btn-close" style={{ padding: "4px 10px" }} onClick={() => setSelectedOrder(null)}>✕</button>
+              </div>
+            </div>
+            <div className="modal-body" style={{ display: "block" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "20px", fontSize: "13.5px", color: "#4a4e55" }}>
+                <div>
+                  <strong>Customer:</strong> {selectedOrder.customer || "Guest Customer"}<br />
+                  <strong>Date:</strong> {selectedOrder.dateString}
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <strong>Status:</strong> {selectedOrder.status}<br />
+                  <strong>Tracking:</strong> {selectedOrder.trackingNumber || "Not Shipped"}
+                </div>
+              </div>
+              <table className="tbl" style={{ marginBottom: "20px" }}>
+                <thead>
+                  <tr>
+                    <th>Item</th>
+                    <th>Qty</th>
+                    <th>Price</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {selectedOrder.items?.map((item, idx) => (
+                    <tr key={idx}>
+                      <td>{item.name}</td>
+                      <td>{item.qty}</td>
+                      <td>${(item.price * item.qty).toFixed(2)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div style={{ textAlign: "right", fontSize: "16px", fontWeight: 700 }}>
+                Total: ${(selectedOrder.total || 0).toFixed(2)}
               </div>
             </div>
             <div className="modal-footer">
-              <button type="button" className="btn-close" onClick={() => setActiveFulfillOrder(null)}>Cancel</button>
-              <button type="submit" className="btn-save" style={{ background: "#008060" }}>Confirm Dispatch</button>
+              <button className="btn-save" onClick={() => setSelectedOrder(null)}>Close</button>
             </div>
-          </form>
+          </div>
         </div>
       )}
       </>
